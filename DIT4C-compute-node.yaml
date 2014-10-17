@@ -18,19 +18,19 @@ parameters:
     type: string
     label: Image ID
     description: ID of the CoreOS image to use for the instance to be created
-    default: c25008d9-e229-4768-bf1f-7f476486d126
+    default: db301061-a72e-4159-8bd4-41791c290d72
 
   AvailabilityZone:
     type: string
     description: The NeCTAR zone in which the VM is to run
     default: sa
     constraints:
-     - allowed_values: [melbourne, monash, sa, qld, NCI]   
+     - allowed_values: [melbourne, monash, sa, qld, NCI]
 
   PortalURL:
     type: string
     label: Portal URL
-    description: The DIT4C Portal URL (scheme, host and port only) 
+    description: The DIT4C Portal URL (scheme, host and port only)
     default: https://dit4c.metadata.net
     constraints:
       - length: { min: 8 }
@@ -95,8 +95,7 @@ resources:
                   [Service]
                   Type=oneshot
                   RemainAfterExit=yes
-                  ExecStart=/usr/sbin/wipefs -f /dev/vdb
-                  ExecStart=/usr/sbin/mkfs.btrfs -f /dev/vdb
+                  ExecStart=/bin/bash -c "/usr/sbin/btrfs device scan /dev/vdb || (/usr/sbin/wipefs -f /dev/vdb && /usr/sbin/mkfs.btrfs -f /dev/vdb)"
               - name: var-lib-docker.mount
                 command: start
                 content: |
@@ -118,20 +117,6 @@ resources:
                   Type=oneshot
                   RemainAfterExit=yes
                   ExecStart=/usr/bin/docker run -ti --name dit4c_deploy_compute --rm -e PORTAL_URL=$portalURL -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
-              - name: dit4c-compute-node.service
-                enable: true
-                command: start
-                content: |
-                  [Unit]
-                  Description=DIT4C Compute Node services
-                  After=docker.service
-                  
-                  [Service]
-                  TimeoutStartSec=0
-                  ExecStart=/usr/bin/docker start dit4c_gatehouse
-                  ExecStart=/usr/bin/docker start dit4c_machineshop
-                  ExecStop=/usr/bin/docker stop dit4c_gatehouse
-                  ExecStop=/usr/bin/docker stop dit4c_machineshop
             users:
               - name: $githubAccount
                 groups:
