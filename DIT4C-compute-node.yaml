@@ -1,10 +1,18 @@
 heat_template_version: 2013-05-23
 
 
-description: 'NeCTAR Template for creating a DIT4C compute node on ephemeral storage.'
+description: 'NeCTAR Template for creating DIT4C compute nodes on ephemeral storage.'
 
 
 parameters:
+
+  ComputeNodeCount:
+    type: number
+    label: Compute Node count
+    description: Number of compute node instances to be created.
+    default: 1
+    constraints:
+      - range: { min: 1, max: 100 }
 
   InstanceSize:
     type: string
@@ -74,92 +82,96 @@ resources:
           ToPort: "8080"
           CidrIp: "0.0.0.0/0"
 
-  ComputeNodeInstance:
-    type: OS::Nova::Server
+  ComputeNodes:
+    type: OS::Heat::ResourceGroup
     properties:
-      availability_zone: { Ref: AvailabilityZone }
-      image: { Ref: ImageID }
-      flavor: { Ref: InstanceSize }
-      key_name: { Ref: KeyName }
-      security_groups: [{Ref: ComputeNodeSecGroup}]
-      user_data_format: RAW
-      config_drive: "true"
-      user_data:
-        str_replace:
-          template: |
-            #cloud-config
-            coreos:
-              etcd:
-                addr: $private_ipv4:4001
-                peer-addr: $private_ipv4:7001
-              update:
-                reboot-strategy: "off"
-              units:
-              - name: setup-ephemeral.service
-                command: start
-                enable: true
-                content: |
-                  [Unit]
-                  Description=Setup the ephemeral drive
-                  ConditionPathExists=!/var/lib/ephemeral-has-been-setup
-                  [Service]
-                  Type=oneshot
-                  RemainAfterExit=yes
-                  ExecStart=/opt/bin/setup-ephemeral
-                  ExecStartPost=/usr/bin/touch /var/lib/ephemeral-has-been-setup
-              - name: swap.service
-                command: start
-                enable: true
-                content: |
-                  [Unit]
-                  Description=Turn on swap
-                  Requires=setup-ephemeral.service
-                  After=setup-ephemeral.service
-                  Before=docker.service
-                  # From https://github.com/coreos/docs/issues/52#issuecomment-51142602
-                  [Service]
-                  Type=oneshot
-                  Environment="SWAPFILE=/8GiB.swap"
-                  RemainAfterExit=true
-                  ExecStartPre=/usr/sbin/losetup -f ${SWAPFILE}
-                  ExecStart=/usr/bin/sh -c "/sbin/swapon $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
-                  ExecStop=/usr/bin/sh -c "/sbin/swapoff $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
-                  ExecStopPost=/usr/bin/sh -c "/usr/sbin/losetup -d $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
-              - name: deploy-dit4c.service
-                command: start
-                enable: true
-                content: |
-                  [Unit]
-                  Description=Setup compute node
-                  Requires=docker.service
-                  After=docker.service
-                  [Service]
-                  Type=oneshot
-                  RemainAfterExit=yes
-                  ExecStart=/usr/bin/docker run -ti --name dit4c_deploy_compute --rm -e PORTAL_URL=$portalURL -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
-            write_files:
-            - path: /opt/bin/setup-ephemeral
-              permissions: 0744
-              owner: root
-              content: |
-                #!/usr/bin/env bash
-                # Add remaining space to BTRFS
-                btrfs device add -f /dev/vdb /
-                # Create swap file
-                fallocate -l 8096m /8GiB.swap
-                chmod 600 /8GiB.swap
-                chattr +C /8GiB.swap
-                mkswap /8GiB.swap
-            manage_etc_hosts: localhost
-            users:
-            - name: $githubAccount
-              groups:
-                - sudo
-                - docker
-              coreos-ssh-import-github: $githubAccount
-          params:
-            $portalURL: { get_param: PortalURL }
-            $githubAccount: { get_param: GitHubAccount }
+      count: { Ref: ComputeNodeCount }
+      resource_def:
+        type: OS::Nova::Server
+        properties:
+          availability_zone: { Ref: AvailabilityZone }
+          image: { Ref: ImageID }
+          flavor: { Ref: InstanceSize }
+          key_name: { Ref: KeyName }
+          security_groups: [{Ref: ComputeNodeSecGroup}]
+          user_data_format: RAW
+          config_drive: "true"
+          user_data:
+            str_replace:
+              template: |
+                #cloud-config
+                coreos:
+                  etcd:
+                    addr: $private_ipv4:4001
+                    peer-addr: $private_ipv4:7001
+                  update:
+                    reboot-strategy: "off"
+                  units:
+                  - name: setup-ephemeral.service
+                    command: start
+                    enable: true
+                    content: |
+                      [Unit]
+                      Description=Setup the ephemeral drive
+                      ConditionPathExists=!/var/lib/ephemeral-has-been-setup
+                      [Service]
+                      Type=oneshot
+                      RemainAfterExit=yes
+                      ExecStart=/opt/bin/setup-ephemeral
+                      ExecStartPost=/usr/bin/touch /var/lib/ephemeral-has-been-setup
+                  - name: swap.service
+                    command: start
+                    enable: true
+                    content: |
+                      [Unit]
+                      Description=Turn on swap
+                      Requires=setup-ephemeral.service
+                      After=setup-ephemeral.service
+                      Before=docker.service
+                      # From https://github.com/coreos/docs/issues/52#issuecomment-51142602
+                      [Service]
+                      Type=oneshot
+                      Environment="SWAPFILE=/8GiB.swap"
+                      RemainAfterExit=true
+                      ExecStartPre=/usr/sbin/losetup -f ${SWAPFILE}
+                      ExecStart=/usr/bin/sh -c "/sbin/swapon $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                      ExecStop=/usr/bin/sh -c "/sbin/swapoff $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                      ExecStopPost=/usr/bin/sh -c "/usr/sbin/losetup -d $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                  - name: deploy-dit4c.service
+                    command: start
+                    enable: true
+                    content: |
+                      [Unit]
+                      Description=Setup compute node
+                      Requires=docker.service
+                      After=docker.service
+                      [Service]
+                      Type=oneshot
+                      RemainAfterExit=yes
+                      ExecStart=/usr/bin/docker run -ti --name dit4c_deploy_compute --rm -e PORTAL_URL=$portalURL -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
+                write_files:
+                - path: /opt/bin/setup-ephemeral
+                  permissions: 0744
+                  owner: root
+                  content: |
+                    #!/usr/bin/env bash
+                    # Add remaining space to BTRFS
+                    btrfs device add -f /dev/vdb /
+                    # Create swap file
+                    fallocate -l 8096m /8GiB.swap
+                    chmod 600 /8GiB.swap
+                    chattr +C /8GiB.swap
+                    mkswap /8GiB.swap
+                manage_etc_hosts: localhost
+                users:
+                - name: $githubAccount
+                  groups:
+                    - sudo
+                    - docker
+                  coreos-ssh-import-github: $githubAccount
+              params:
+                $portalURL: { get_param: PortalURL }
+                $githubAccount: { get_param: GitHubAccount }
 
 outputs:
   InstanceIP:
