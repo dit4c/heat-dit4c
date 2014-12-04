@@ -18,14 +18,14 @@ parameters:
     type: string
     label: Image ID
     description: ID of the CoreOS image to use for the instance to be created
-    default: db301061-a72e-4159-8bd4-41791c290d72
+    default: c067d1fa-935a-4254-92e8-3b86c46b6c7e
 
   AvailabilityZone:
     type: string
     description: The NeCTAR zone in which the VM is to run
     default: sa
     constraints:
-     - allowed_values: [melbourne, monash, sa, qld, NCI]
+     - allowed_values: [melbourne, monash, NCI, qld, sa, tasmania]
 
   PortalURL:
     type: string
@@ -34,6 +34,14 @@ parameters:
     default: https://dit4c.metadata.net
     constraints:
       - length: { min: 8 }
+
+  KeyName:
+    type: string
+    label: Key Name
+    description: Name of SSH key to set for the "core" admin user.
+    default: DIT4C
+    constraints:
+      - length: { min: 1 }
 
   GitHubAccount:
     type: string
@@ -72,7 +80,7 @@ resources:
       availability_zone: { Ref: AvailabilityZone }
       image: { Ref: ImageID }
       flavor: { Ref: InstanceSize }
-      #key_name: { Ref: KeyName }
+      key_name: { Ref: KeyName }
       security_groups: [{Ref: ComputeNodeSecGroup}]
       user_data_format: RAW
       config_drive: "true"
@@ -87,42 +95,68 @@ resources:
               update:
                 reboot-strategy: "off"
               units:
-              - name: format-ephemeral.service
+              - name: setup-ephemeral.service
                 command: start
+                enable: true
                 content: |
                   [Unit]
-                  Description=Formats the ephemeral drive
+                  Description=Setup the ephemeral drive
+                  ConditionPathExists=!/var/lib/ephemeral-has-been-setup
                   [Service]
                   Type=oneshot
                   RemainAfterExit=yes
-                  ExecStart=/bin/bash -c "/usr/sbin/btrfs device scan /dev/vdb || (/usr/sbin/wipefs -f /dev/vdb && /usr/sbin/mkfs.btrfs -f /dev/vdb)"
-              - name: var-lib-docker.mount
+                  ExecStart=/opt/bin/setup-ephemeral
+                  ExecStartPost=/usr/bin/touch /var/lib/ephemeral-has-been-setup
+              - name: swap.service
                 command: start
+                enable: true
                 content: |
                   [Unit]
-                  Description=Mount ephemeral to /var/lib/docker
-                  Requires=format-ephemeral.service
-                  After=format-ephemeral.service
+                  Description=Turn on swap
+                  Requires=setup-ephemeral.service
+                  After=setup-ephemeral.service
                   Before=docker.service
-                  [Mount]
-                  What=/dev/vdb
-                  Where=/var/lib/docker
-                  Type=btrfs
+                  # From https://github.com/coreos/docs/issues/52#issuecomment-51142602
+                  [Service]
+                  Type=oneshot
+                  Environment="SWAPFILE=/8GiB.swap"
+                  RemainAfterExit=true
+                  ExecStartPre=/usr/sbin/losetup -f ${SWAPFILE}
+                  ExecStart=/usr/bin/sh -c "/sbin/swapon $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                  ExecStop=/usr/bin/sh -c "/sbin/swapoff $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                  ExecStopPost=/usr/bin/sh -c "/usr/sbin/losetup -d $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
               - name: deploy-dit4c.service
                 command: start
+                enable: true
                 content: |
                   [Unit]
                   Description=Setup compute node
+                  Requires=docker.service
+                  After=docker.service
                   [Service]
                   Type=oneshot
                   RemainAfterExit=yes
                   ExecStart=/usr/bin/docker run -ti --name dit4c_deploy_compute --rm -e PORTAL_URL=$portalURL -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
+            write_files:
+            - path: /opt/bin/setup-ephemeral
+              permissions: 0744
+              owner: root
+              content: |
+                #!/usr/bin/env bash
+                # Add remaining space to BTRFS
+                btrfs device add -f /dev/vdb /
+                # Create swap file
+                fallocate -l 8096m /8GiB.swap
+                chmod 600 /8GiB.swap
+                chattr +C /8GiB.swap
+                mkswap /8GiB.swap
+            manage_etc_hosts: localhost
             users:
-              - name: $githubAccount
-                groups:
-                  - sudo
-                  - docker
-                coreos-ssh-import-github: $githubAccount
+            - name: $githubAccount
+              groups:
+                - sudo
+                - docker
+              coreos-ssh-import-github: $githubAccount
           params:
             $portalURL: { get_param: PortalURL }
             $githubAccount: { get_param: GitHubAccount }
