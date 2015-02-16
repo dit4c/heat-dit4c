@@ -51,14 +51,6 @@ parameters:
     constraints:
       - length: { min: 1 }
 
-  GitHubAccount:
-    type: string
-    label: GitHub Account
-    description:
-      Name of GitHub account to allow admin SSH access to the instance.
-    constraints:
-      - length: { min: 1 }
-
 resources:
 
   ComputeNodeSecGroup:
@@ -124,24 +116,29 @@ resources:
                       RemainAfterExit=yes
                       ExecStart=/opt/bin/setup-ephemeral
                       ExecStartPost=/usr/bin/touch /var/lib/ephemeral-has-been-setup
-                  - name: swap.service
+                  - name: dev-main-swap.swap
                     command: start
                     enable: true
                     content: |
                       [Unit]
-                      Description=Turn on swap
+                      Description=Ephemeral swap
                       Requires=setup-ephemeral.service
                       After=setup-ephemeral.service
-                      Before=docker.service
-                      # From https://github.com/coreos/docs/issues/52#issuecomment-51142602
-                      [Service]
-                      Type=oneshot
-                      Environment="SWAPFILE=/8GiB.swap"
-                      RemainAfterExit=true
-                      ExecStartPre=/usr/sbin/losetup -f ${SWAPFILE}
-                      ExecStart=/usr/bin/sh -c "/sbin/swapon $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
-                      ExecStop=/usr/bin/sh -c "/sbin/swapoff $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
-                      ExecStopPost=/usr/bin/sh -c "/usr/sbin/losetup -d $(/usr/sbin/losetup -j ${SWAPFILE} | /usr/bin/cut -d : -f 1)"
+                      Before=early-docker.service
+                      [Swap]
+                      What=/dev/main/swap
+                  - name: dev-main-docker.mount
+                    command: start
+                    enable: true
+                    content: |
+                      [Unit]
+                      Description=Ephemeral docker storage
+                      Requires=setup-ephemeral.service
+                      After=setup-ephemeral.service
+                      Before=early-docker.service
+                      [Swap]
+                      What=/dev/main/docker
+                      Where=/var/lib/docker
                   - name: deploy-dit4c.service
                     command: start
                     enable: true
@@ -160,23 +157,20 @@ resources:
                   owner: root
                   content: |
                     #!/usr/bin/env bash
-                    # Add remaining space to BTRFS
-                    btrfs device add -f /dev/vdb /
-                    # Create swap file
-                    fallocate -l 8096m /8GiB.swap
-                    chmod 600 /8GiB.swap
-                    chattr +C /8GiB.swap
-                    mkswap /8GiB.swap
+                    # Wipe partition table
+                    dd if=/dev/zero of=/dev/vdb bs=512 count=1
+                    # Create LVM physical volume
+                    lvm pvcreate /dev/vdb
+                    lvm vgcreate main /dev/vdb
+                    # Create swap partition
+                    lvm lvcreate main -n swap -L 8G --yes
+                    mkswap /dev/main/swap
+                    # Create docker partition
+                    lvm lvcreate main -n docker -l 100%FREE --yes
+                    mkfs.ext4 /dev/main/docker
                 manage_etc_hosts: localhost
-                users:
-                - name: $githubAccount
-                  groups:
-                    - sudo
-                    - docker
-                  coreos-ssh-import-github: $githubAccount
               params:
                 $portalURL: { get_param: PortalURL }
-                $githubAccount: { get_param: GitHubAccount }
 
 outputs:
   InstanceIP:

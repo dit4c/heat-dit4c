@@ -1,0 +1,73 @@
+#cloud-config
+coreos:
+  etcd:
+    addr: $private_ipv4:4001
+    peer-addr: $private_ipv4:7001
+  update:
+    reboot-strategy: "off"
+  units:
+  - name: setup-ephemeral.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Setup the ephemeral drive
+      ConditionPathExists=!/var/lib/ephemeral-has-been-setup
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/opt/bin/setup-ephemeral
+      ExecStartPost=/usr/bin/touch /var/lib/ephemeral-has-been-setup
+  - name: dev-main-swap.swap
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Ephemeral swap
+      Requires=setup-ephemeral.service
+      After=setup-ephemeral.service
+      Before=early-docker.service
+      [Swap]
+      What=/dev/main/swap
+  - name: var-lib-docker.mount
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Ephemeral docker storage
+      Requires=setup-ephemeral.service
+      After=setup-ephemeral.service
+      Before=early-docker.service
+      [Mount]
+      What=/dev/main/docker
+      Where=/var/lib/docker
+  - name: deploy-dit4c.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Setup compute node
+      Requires=docker.service
+      After=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/bin/docker run -i --name dit4c_deploy_compute --rm -e PORTAL_URL=https://resbaz.cloud.edu.au -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
+write_files:
+- path: /opt/bin/setup-ephemeral
+  permissions: 0744
+  owner: root
+  content: |
+    #!/usr/bin/env bash
+    # Wipe partition table
+    dd if=/dev/zero of=/dev/vdb bs=512 count=1024
+    # Create LVM physical volume
+    lvm pvcreate /dev/vdb
+    lvm vgcreate main /dev/vdb
+    # Create swap partition
+    lvm lvcreate main -n swap -L 8G --yes
+    mkswap /dev/main/swap
+    # Create docker partition
+    lvm lvcreate main -n docker -l 100%FREE --yes
+    mkfs.ext4 /dev/main/docker
+manage_etc_hosts: localhost
