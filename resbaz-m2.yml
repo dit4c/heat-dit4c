@@ -1,0 +1,51 @@
+#cloud-config
+coreos:
+  update:
+    reboot-strategy: "off"
+  units:
+  - name: setup-zram-swap.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Setup compressed RAM swap
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/opt/bin/zram-swap-init
+  - name: dev-zram0.swap
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Requires=setup-zram-swap.service
+      After=setup-zram-swap.service
+      [Swap]
+      What=/dev/zram0
+  - name: deploy-dit4c.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Setup compute node
+      Requires=docker.service
+      After=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/bin/docker run -i --name dit4c_deploy_compute --rm -e PORTAL_URL=https://resbaz.cloud.edu.au -v /var/run/docker.sock:/var/run/docker.sock dit4c/dit4c-deploy-compute
+write_files:
+- path: /opt/bin/zram-swap-init
+  permissions: 0744
+  owner: root
+  content: |
+    #!/usr/bin/env bash
+    # Load zram module
+    modprobe zram num_devices=1
+    # Allocate half of RAM, rounded to the nearest MB
+    MEM_SIZE=$(cat /proc/meminfo | grep MemTotal | grep -Eo "[0-9]+")
+    let "ZRAM_SIZE=$MEM_SIZE / 2 / 1024 * 1024 * 1024"
+    printf $ZRAM_SIZE > /sys/block/zram0/disksize
+    # Format swap
+    mkswap /dev/zram0
+manage_etc_hosts: localhost
