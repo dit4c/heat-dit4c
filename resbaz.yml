@@ -67,4 +67,13 @@ write_files:
     # Create docker partition
     lvm lvcreate main -n docker -l 100%FREE --yes
     mkfs.ext4 /dev/main/docker
+- path: /etc/systemd/network/10-eth1.network
+  permissions: 0644
+  owner: root
+  content: |
+    [Match]
+    Name=eth1
+
+    [Network]
+    DHCP=no
 manage_etc_hosts: localhost
